@@ -40,8 +40,6 @@ A lightweight, production-ready Node.js proxy server that provides an OpenAI-com
 
 ```bash
 node main.js
-# or
-node IDE.js
 ```
 
 The server listens on **port 3000** by default and automatically initializes a new chat session on startup.
@@ -63,7 +61,7 @@ localStorage.getItem('access_token')
 
 ### Server Configuration
 
-Edit `main.js` or `IDE.js` (depending on your use case) and insert your token:
+Edit `main.js` and insert your token:
 
 ```javascript
 // Configuration - Line ~10-15
