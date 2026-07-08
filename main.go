@@ -138,6 +138,7 @@ type appState struct {
 
 var state = &appState{
     models: make(map[string]modelInfo),
+    useHistory: true,
 }
 
 // ================= HTTP CLIENT (pooled, HTTP/2 capable) =================
