@@ -1,92 +1,108 @@
 # Kimi Proxy Bridge
 
-[![Node.js](https://img.shields.io/badge/Node.js-v16+-green.svg)](https://nodejs.org/)
+[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://go.dev/)
 [![API](https://img.shields.io/badge/API-OpenAI%20Compatible-orange.svg)]()
+[![Performance](https://img.shields.io/badge/Optimized-High%20Throughput-red.svg)]()
 
-A lightweight, production-ready Node.js proxy server that provides an OpenAI-compatible API interface for Kimi AI (kimi.ai). Zero external dependencies, supporting streaming responses, multimodal inputs, and conversation history management.
-
-## 📋 Table of Contents
-
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [API Reference](#api-reference)
-- [Usage Examples](#usage-examples)
-- [Technical Details](#technical-details)
-- [Troubleshooting](#troubleshooting)
+A high-performance, production-ready Go proxy server that provides an
+OpenAI-compatible API interface for Kimi AI (kimi.ai). Built for maximum
+network throughput with zero external dependencies, connection pooling,
+HTTP/2 support, and dynamic model discovery.
 
 ## ✨ Features
 
+- **⚡ Go-Native Performance** — Compiled binary with zero GC pressure on hot paths, pooled HTTP connections, and HTTP/2 multiplexing
 - **🔌 OpenAI-Compatible API** — Drop-in replacement for OpenAI chat completions endpoint
-- **⚡ Zero Dependencies** — Uses native Node.js `http`/`https` modules only
-- **🌊 Streaming Support** — Server-Sent Events (SSE) for real-time token streaming
+- **🌊 SSE Streaming** — Server-Sent Events for real-time token streaming with per-flush control
 - **🖼️ Multimodal Support** — Handles both text and structured content arrays
 - **🧠 Extended Capabilities** — Deep thinking and web search functionality
 - **📚 Flexible History** — Toggle between stateful conversations and stateless requests
-- **🔄 Dynamic Model Switching** — Runtime model selection between K2.5 variants
+- **🔄 Dynamic Model Discovery** — Models fetched live from Kimi server at startup; refreshable at runtime
+- **🔒 Thread-Safe** — `sync.RWMutex` protected state for concurrent request handling
+- **💤 Graceful Shutdown** — Clean connection draining on SIGINT/SIGTERM
 
 ## 📦 Prerequisites
 
-- **Node.js**: Version 16.0 or higher recommended
-- **Kimi.ai Account**: Valid authentication credentials required
-- **Network Access**: Connectivity to kimi.ai services
+- **Go**: Version 1.21 or higher
+- **Kimi.ai Account**: Valid authentication credentials
+- **Network Access**: Connectivity to `kimi.com` services
 
 ## 🚀 Installation
 
-1. **Clone or download** the repository
-2. **Configure authentication** (see Configuration section)
-3. **Start the server**:
+### Quick Start
 
 ```bash
-node main.js
+# Initialize module
+go mod init kimi-proxy
+
+# Export token
+export KIMI_ACCESS_TOKEN="ey..." # or $env:KIMI_ACCESS_TOKEN="ey..." for Windows
+# Run directly (development)
+go run main.go
 ```
 
-The server listens on **port 3000** by default and automatically initializes a new chat session on startup.
+### Production Build (Recommended)
+
+```bash
+# Build stripped, optimized binary
+go build -ldflags "-s -w" -trimpath -o kimi-proxy main.go
+
+# Run
+KIMI_ACCESS_TOKEN="ey.." ./kimi-proxy
+```
+
+### Environment Variables (Optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KIMI_ACCESS_TOKEN` | `""` | Kimi access token (JWT) |
+| `AUTH_KEY` | `Waguri` | API key clients must send as `Bearer <key>` |
+| `PORT` | `3000` | Server listen port |
+
+You can also hardcode credentials directly in `main.go` (lines 17-19).
 
 ## 🔐 Configuration
 
 ### Obtaining Your Access Token
 
-1. Navigate to [kimi.ai](https://kimi.ai) and log in to your account
-2. Open **Developer Tools** (`F12` or `Ctrl+Shift+I`)
-3. Navigate to **Application** tab (Chrome/Edge) or **Storage** (Firefox)
-4. In the left sidebar, expand **Local Storage** → `https://kimi.ai`
-5. Locate the `access_token` key and copy its value (JWT string starting with `eyJ...`)
+1. Navigate to [kimi.ai](https://kimi.ai) and log in
+2. Open **Developer Tools** (`F12`)
+3. Go to **Application** → **Local Storage** → `https://kimi.ai`
+4. Copy the `access_token` value (JWT starting with `eyJ...`)
 
-**Alternative Method via Console:**
+**Via Console:**
 ```javascript
 localStorage.getItem('access_token')
 ```
 
-### Server Configuration
+### Setting the Token
 
-Edit `main.js` and insert your token:
-
-```javascript
-// Configuration - Line ~10-15
-const ACCESS_TOKEN = "your-access-token-here";
+**Option A — Environment variable (recommended):**
+```bash
+export KIMI_ACCESS_TOKEN="eyJhbGciOi..."
+./kimi-proxy
 ```
 
-### Authentication Header
+**Option B — Hardcode in source:**
+```go
+accessToken = envOrDefault("KIMI_ACCESS_TOKEN", "your-token-here")
+```
 
-All API requests must include the Authorization header:
+### Client Authentication
 
+All API requests must include:
 ```http
 Authorization: Bearer Waguri
 ```
 
-*Note: The API key can be customized in the configuration file (around line 65).*
+Customize via `AUTH_KEY` env var or source code.
 
-### Quick Connectivity Test
+### Quick Test
 
 ```bash
 curl http://localhost:3000/models \
   -H "Authorization: Bearer Waguri"
 ```
-## 🎥 Walkthrough
-
-For detailed setup instructions and advanced usage scenarios, refer to the [video walkthrough](https://youtu.be/GlWP-YYddZg).
 
 ## 📡 API Reference
 
@@ -94,196 +110,133 @@ For detailed setup instructions and advanced usage scenarios, refer to the [vide
 
 **Endpoint:** `POST /v1/chat/completions`
 
-Creates a chat completion for the provided messages. Compatible with OpenAI's chat completions specification.
-
-#### Request Headers
-| Header | Value |
-|--------|-------|
-| `Authorization` | `Bearer Waguri` |
-| `Content-Type` | `application/json` |
-
 #### Request Body
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `messages` | Array | Yes | Conversation history array |
-| `model` | String | Yes | Model identifier: `SCENARIO_K2D5` or `SCENARIO_K2D5_TURBO` |
-| `stream` | Boolean | No | Enable SSE streaming (default: `false`) |
-| `deepThink` | Boolean | No | Enable enhanced reasoning mode |
-| `search` | Boolean | No | Enable web search capabilities |
+| `messages` | Array | Yes | Conversation history |
+| `model` | String | No | Model key (e.g. `k2d6`, `k2d6-thinking`). Defaults to server default |
+| `stream` | Boolean | No | SSE streaming (always streamed) |
+| `deepThink` | Boolean | No | Enable enhanced reasoning |
+| `search` | Boolean | No | Enable web search |
 
-#### Message Format
-```json
-{
-  "role": "user",
-  "content": "Your message here"
-}
-```
-
-**Multimodal Content Format:**
-```json
-{
-  "role": "user",
-  "content": [
-    { "type": "text", "text": "Analyze this image" }
-  ]
-}
-```
-
-### 2. History Mode Management
-
-**Endpoint:** `GET /history` or `POST /history`
-
-Controls conversation context persistence.
-
-| Mode | Behavior |
-|------|----------|
-| `false` (Default) | Stateless mode. Uses static IDs; each request branches from initialization point |
-| `true` | Stateful mode. Maintains continuous conversation context with dynamic message IDs |
-
-**POST Example:**
-```bash
-curl -X POST http://localhost:3000/history \
-  -H "Authorization: Bearer Waguri" \
-  -H "Content-Type: application/json" \
-  -d '{"enable": true}'
-```
-
-**GET Example:**
-```bash
-curl "http://localhost:3000/history?enable=true" \
-  -H "Authorization: Bearer Waguri"
-```
-
-### 3. Session Management
-
-**Endpoint:** `POST /new`
-
-Initializes a fresh chat session, generating new Chat ID and Parent Message ID. Resets both static and global state.
-
-**Response:**
-```json
-{
-  "message": "New chat started",
-  "chatId": "...",
-  "lastMessageId": "..."
-}
-```
-
-### 4. Model Management
-
-**List Available Models**
-```bash
-GET /models
-```
-
-**Switch Active Model**
-```bash
-POST /models
-Content-Type: application/json
-
-{
-  "model": "SCENARIO_K2D5_TURBO"
-}
-```
-
-**Available Models:**
-- `SCENARIO_K2D5` — Kimi 2.5 Standard
-- `SCENARIO_K2D5_TURBO` — Kimi 2.5 Turbo (optimized for speed)
-
-## 💡 Usage Examples
-
-### Basic Completion (Non-Streaming)
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer Waguri" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      { "role": "user", "content": "Hello! How are you?" }
-    ],
-    "model": "SCENARIO_K2D5",
-    "stream": false
-  }'
-```
-
-### Streaming Response
+#### Basic Example
 ```bash
 curl -X POST http://localhost:3000/v1/chat/completions \
   -H "Authorization: Bearer Waguri" \
   -H "Content-Type: application/json" \
   -N \
   -d '{
-    "messages": [
-      { "role": "user", "content": "Tell me a short story" }
-    ],
-    "model": "SCENARIO_K2D5",
-    "stream": true
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "model": "k2d6"
   }'
 ```
 
-### Deep Thinking Mode
+#### Deep Thinking Mode
 ```bash
 curl -X POST http://localhost:3000/v1/chat/completions \
   -H "Authorization: Bearer Waguri" \
   -H "Content-Type: application/json" \
   -d '{
-    "messages": [
-      { "role": "user", "content": "Solve this complex math problem: 2x + 5 = 15" }
-    ],
-    "model": "SCENARIO_K2D5",
-    "deepThink": true,
-    "stream": false
+    "messages": [{"role": "user", "content": "Solve: 2x + 5 = 15"}],
+    "model": "k2d6-thinking",
+    "deepThink": true
   }'
 ```
 
-### Web Search Enabled
+### 2. Model Management
+
+**List Available Models (fetched dynamically from Kimi):**
 ```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer Waguri" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      { "role": "user", "content": "What are the latest developments in AI?" }
-    ],
-    "model": "SCENARIO_K2D5",
-    "search": true,
-    "stream": false
-  }'
+GET /models
 ```
+
+**Switch Default Model:**
+```bash
+POST /models
+Content-Type: application/json
+
+{"model": "k2d6-thinking"}
+```
+
+**Refresh Models from Server:**
+```bash
+POST /refresh-models
+```
+
+Models are fetched at startup from:
+```
+POST https://www.kimi.com/apiv2/kimi.gateway.config.v1.ConfigService/GetAvailableModels
+```
+
+Example model keys returned:
+
+| Key | Display Name | Scenario | Thinking |
+|-----|-------------|----------|----------|
+| `k2d6` | K2.6 Instant | SCENARIO_K2D5 | No |
+| `k2d6-thinking` | K2.6 Thinking | SCENARIO_K2D5 | Yes |
+| `k2d6-agent` | K2.6 Agent | SCENARIO_OK_COMPUTER | No |
+| `k2d6-agent-ultra` | K2.6 Agent Swarm | SCENARIO_OK_COMPUTER | No |
+
+*Model keys are dynamic and may change based on Kimi server configuration.*
+
+### 3. History Mode
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/history?enable=true` | GET | Toggle history mode |
+| `/history` | POST | `{"enable": true}` |
+
+| Mode | Behavior |
+|------|----------|
+| `false` (default) | Stateless — each request branches from initialization point |
+| `true` | Stateful — maintains continuous conversation with dynamic message IDs |
+
+### 4. Session Management
+
+```bash
+POST /new
+```
+
+Initializes a fresh chat session with new Chat ID and Parent Message ID.
 
 ## 🛠️ Technical Details
 
-### State Management Architecture
+### Performance Architecture
 
-The server maintains an internal `globalState` object:
+- **Connection Pooling**: `http.Transport` with 500 max idle connections, 100 per-host
+- **HTTP/2**: Auto-negotiated with `ForceAttemptHTTP2`
+- **Buffered I/O**: `bufio.NewReaderSize(64KB)` for upstream frame parsing
+- **Zero-Copy Reads**: Pre-allocated SSE framing byte slices
+- **Thread-Safe State**: `sync.RWMutex` with read-lock for hot paths
+- **Reusable Chunk Struct**: OpenAI SSE chunk template reused across frames
 
-- **Static IDs**: Persistent identifiers created on startup or via `/new`. Used when `history: false`.
-- **Dynamic IDs**: Updated per-interaction when `history: true` to maintain conversation continuity.
-- **Model Context**: Globally switched for all subsequent requests when changed via `/models`.
+### Connect Protocol
 
-### Error Handling
+Kimi uses the [Connect RPC](https://connect.build/) protocol for streaming:
 
-- Returns standardized OpenAI-format error objects
-- Global `uncaughtException` handler prevents server crashes from malformed payloads
-- Automatic retry logic for transient network failures
+```
+Wire format: [1-byte flag] [4-byte BE length] [JSON payload]
+  flag 0x00 = data frame
+  flag 0x02 = error/trailer frame (skipped)
+```
 
-### Content Processing
+### State Management
 
-- **Text Normalization**: Automatically extracts text from array-based content structures
-- **Agent Compatibility**: Safe for integration with LangChain, AutoGen, and other agent frameworks
-- **Encoding**: UTF-8 support for international character sets
-
+- **Static IDs**: Created on startup or via `/new`. Used when `history: false`
+- **Dynamic IDs**: Updated per-interaction when `history: true`
+- **Model Context**: Per-request override via `model` field, or global default via `POST /models`
 
 ## 🐛 Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| `401 Unauthorized` | Verify `access_token` is valid and not expired; regenerate from kimi.ai |
-| `Connection refused` | Ensure Node.js server is running on port 3000 (or configured port) |
-| Empty responses | Check that `Authorization` header exactly matches `Bearer Waguri` |
-| Streaming not working | Ensure client supports SSE and `-N` flag is used in curl |
-| Model errors | Verify model identifier is exactly `SCENARIO_K2D5` or `SCENARIO_K2D5_TURBO` |
+| `401 Unauthorized` | Verify `access_token` is valid; regenerate from kimi.ai |
+| `Connection refused` | Ensure server is running on configured port |
+| Empty responses | Check `Authorization: Bearer Waguri` header |
+| Streaming not working | Ensure client supports SSE; use `-N` flag in curl |
+| Model not found | `GET /models` to list valid keys; `POST /refresh-models` to update |
+| `503 Server not ready` | Server still initializing chat session — retry in a moment |
 
 ---
 
-**Note**: This is an unofficial community project and is not affiliated with Moonshot AI or kimi.ai.
+**Note**: Unofficial community project. Not affiliated with Moonshot AI or kimi.ai.
