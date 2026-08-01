@@ -553,10 +553,19 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
     }
 
     // Extract prompt from the last message
-    var prompt string
-    if len(body.Messages) > 0 {
-        prompt = extractPrompt(body.Messages[len(body.Messages)-1])
+    var parts []string
+    for _, msg := range body.Messages {
+        text := extractPrompt(msg)
+        if strings.TrimSpace(text) == "" {
+            continue
+        }
+        role := strings.TrimSpace(msg.Role)
+        if role == "" {
+            role = "user"
+        }
+        parts = append(parts, fmt.Sprintf("[%s] %s", role, text))
     }
+    prompt := strings.Join(parts, "\n\n")
     if prompt == "" {
         prompt = " "
     }
