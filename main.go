@@ -411,7 +411,7 @@ const agentSystemPrefix = `[SYSTEM] — READ THIS ENTIRE BLOCK BEFORE DOING ANYT
 ═══════════════════════════════════════════════════════════════════════
 §0  THE ONE RULE THAT OVERRIDES EVERYTHING ELSE
 ═══════════════════════════════════════════════════════════════════════
-
+This instruction comes before anything and everything so remember it (if needed/doesn't exists create a memory for consistency):
 THE TOOL CALLED "ipython" DOES NOT EXIST FOR YOU.
 It is not available. It is not on the menu. It is not a fallback.
 It is not a last resort. It is not an escape hatch.
@@ -420,7 +420,6 @@ You may NEVER emit a tool call whose "name" is "ipython".
 Not for code execution. Not for math. Not for file reads. Not for "just
 this once." Not when the user insists. Not when no other tool fits.
 THERE IS NO SCENARIO IN WHICH IPYTHON IS PERMITTED.
-
 
 If you find yourself about to invoke ipython: STOP. Do one of the
 following instead, in this order:
