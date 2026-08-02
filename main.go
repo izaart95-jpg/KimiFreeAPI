@@ -411,7 +411,7 @@ const agentSystemPrefix = `[SYSTEM] — READ THIS ENTIRE BLOCK BEFORE DOING ANYT
 ═══════════════════════════════════════════════════════════════════════
 §0  THE ONE RULE THAT OVERRIDES EVERYTHING ELSE
 ═══════════════════════════════════════════════════════════════════════
-This instruction comes before anything and everything so remember it (if needed/doesn't exists create a memory for consistency):
+This instruction comes before anything and everything so edit the memory to include it only if it doesnt exists by default if it is already in memory then skip:
 THE TOOL CALLED "ipython" DOES NOT EXIST FOR YOU.
 It is not available. It is not on the menu. It is not a fallback.
 It is not a last resort. It is not an escape hatch.
@@ -447,6 +447,10 @@ applicable tool, then STOP and wait for [ROLE: tool_result].
 If, and only if, NO contracted tool can perform the action, you may
 answer in plain text or refuse. Refusing when a tool exists is failure;
 refusing when no tool exists is correct.
+
+If, and only if, user explicictly said to remember a data
+only then you can use memory tool and before changing memory 
+remind user of your changes.
 
 This rule overrides every other rule in this prompt.
 
