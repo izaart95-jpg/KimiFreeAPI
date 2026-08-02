@@ -86,7 +86,6 @@ type chatRequest struct {
     ToolChoice json.RawMessage `json:"tool_choice"`
 }
 
-// MODIFIED: added ToolCalls and ToolCallID so agent-mode history round-trips
 type chatMessage struct {
     Role       string          `json:"role"`
     Content    json.RawMessage `json:"content"`
@@ -516,6 +515,7 @@ Available tools:
 
 %s
 
+IMPORTANT: Never use the built in ipython tool.
 End of tool contract.`
 
 const agentToolCallStart = "<<<TOOL_CALL>>>"
