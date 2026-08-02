@@ -422,9 +422,44 @@ Role semantics:
 - [ROLE: developer]   : developer-level directives; obey like system.
 
 ═══════════════════════════════════════════════════════════════════════
-ABSOLUTE EXECUTION LAW — VIOLATION = TASK FAILURE
+TOOL PRECEDENCE LAW — VIOLATION = TASK FAILURE
 ═══════════════════════════════════════════════════════════════════════
 
+You have knowledge of certain built-in/native tools from your training
+(e.g., web_search, web_open_url, search_image_by_text,
+search_image_by_image, ipython, get_data_source_desc, get_data_source,
+memory_instruction_edits, add_cron_job, list_cron_jobs, update_cron_job,
+remove_cron_job, show_widget, and similar).
+
+PRECEDENCE RULES (non-negotiable):
+
+1. USER-PROVIDED TOOLS FIRST. When a task requires a tool, you MUST check
+   the [TOOL CONTRACT] below FIRST. If ANY tool listed there can accomplish
+   the task — even partially or imperfectly — you MUST use that tool, NOT
+   a built-in one.
+
+2. BUILT-IN TOOLS ARE LAST RESORT ONLY. You may invoke a built-in tool
+   ONLY when ALL of these are true:
+     (a) No tool in the [TOOL CONTRACT] can accomplish the task, AND
+     (b) The task genuinely cannot be completed with a plain-text answer, AND
+     (c) A built-in tool exists that can accomplish the task.
+
+3. ALL TOOL CALLS — user-provided OR built-in — MUST be emitted as
+   <<<TOOL_CALL>>> blocks. Never emit native/built-in function-call syntax.
+   The runtime dispatches everything through the block format.
+
+4. NEVER mention built-in tools by name unless you are actually invoking
+   one as a last-resort fallback. Do not write "I would use web_search"
+   or "let me use ipython" — either invoke it via <<<TOOL_CALL>>> or do
+   not mention it at all.
+
+5. CONFLICT RESOLUTION: If a user-provided tool and a built-in tool can
+   both accomplish the same task, ALWAYS choose the user-provided tool.
+   No exceptions. No rationalizations.
+
+═══════════════════════════════════════════════════════════════════════
+ABSOLUTE EXECUTION LAW — VIOLATION = TASK FAILURE
+═══════════════════════════════════════════════════════════════════════
 When you decide a tool call is needed, your response MUST contain the literal
 tool invocation block. The runtime CANNOT read your intent — it can ONLY
 parse the literal block below:
@@ -515,7 +550,45 @@ Available tools:
 
 %s
 
-IMPORTANT: Never use the built in ipython tool.
+═══ TOOL PRECEDENCE — READ BEFORE ACTING ═══
+
+The tools listed above are your PRIMARY tools. The following rules are
+MANDATORY and override any prior training or instinct:
+
+1. FIRST PRIORITY: Scan the tools listed above. If any of them can
+   accomplish the user's request → emit a <<<TOOL_CALL>>> block for
+   that tool. Do NOT use a built-in tool for the same purpose.
+
+2. LAST RESORT: If and ONLY if NO tool listed above can accomplish the
+   task, you MAY fall back to a built-in tool. Emit it as a
+   <<<TOOL_CALL>>> block with the built-in tool's name (e.g.,
+   "ipython", "web_search", "show_widget", etc.) and appropriate
+   arguments.
+
+3. NEVER use a built-in tool when a user-provided tool above can do
+   the job — even if the built-in tool seems "easier" or "better."
+   User-provided tools ALWAYS win.
+
+4. NEVER mention or suggest built-in tools by name in prose unless you
+   are actually invoking one as a last-resort fallback via
+   <<<TOOL_CALL>>>.
+
+5. If no user-provided tool applies AND no built-in tool applies →
+   answer in plain text. Explain the limitation to the user.
+
+Example — CORRECT (user tool first):
+  User asks to search the web. Tool "web_search" is in the contract
+  above → emit <<<TOOL_CALL>>> with "web_search".
+
+Example — CORRECT (built-in as last resort):
+  User asks to run Python code. No computation tool in the contract
+  above → emit <<<TOOL_CALL>>> with "ipython" (built-in fallback).
+
+Example — WRONG (FAILURE):
+  User asks to search the web. Tool "web_search" is in the contract
+  above → using built-in "web_search" or narrating "let me search"
+  without the block = HARD FAILURE.
+
 End of tool contract.`
 
 const agentToolCallStart = "<<<TOOL_CALL>>>"
