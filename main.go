@@ -8,6 +8,7 @@ import (
     "encoding/binary"
     "encoding/hex"
     "encoding/json"
+    "errors"
     "flag"
     "fmt"
     "io"
@@ -32,8 +33,9 @@ var (
 )
 
 const (
-    kimiChatURL   = "https://www.kimi.com/apiv2/kimi.gateway.chat.v1.ChatService/Chat"
-    kimiModelsURL = "https://www.kimi.com/apiv2/kimi.gateway.config.v1.ConfigService/GetAvailableModels"
+    kimiChatURL       = "https://www.kimi.com/apiv2/kimi.gateway.chat.v1.ChatService/Chat"
+    kimiModelsURL     = "https://www.kimi.com/apiv2/kimi.gateway.config.v1.ConfigService/GetAvailableModels"
+    kimiDeleteChatURL = "https://www.kimi.com/apiv2/kimi.chat.v1.ChatService/DeleteChat"
 
     deviceID  = "7586915550627013133"
     sessionID = "1731469129988841572"
@@ -108,6 +110,11 @@ type kimiFrame struct {
         Text *struct {
             Content string `json:"content"`
         } `json:"text,omitempty"`
+        Exception *struct {
+            Error *struct {
+                Reason string `json:"reason"`
+            } `json:"error,omitempty"`
+        } `json:"exception,omitempty"`
     } `json:"block,omitempty"`
 }
 
@@ -141,6 +148,8 @@ type appState struct {
     modelsList      []openAIModel
     staticChatID    string
     staticParentID  string
+    backupChatID    string
+    backupParentID  string
 }
 
 var state = &appState{
@@ -400,6 +409,140 @@ func startNewChat() (chatID, lastMessageID string, err error) {
         return "", "", fmt.Errorf("no chat ID returned from Kimi")
     }
     return chatID, lastMessageID, nil
+}
+
+// errContextTooLong is returned by readKimiFrames when Kimi reports that the
+// conversation has reached its token-length limit
+// (REASON_TOKEN_LENGTH_TOO_LONG).
+var errContextTooLong = errors.New("kimi: conversation context limit reached")
+
+// deleteChat best-effort removes a chat session from Kimi. Used to clean up
+// sessions that have been rotated out so they don't accumulate server-side.
+func deleteChat(chatID string) {
+    if chatID == "" {
+        return
+    }
+    body := strings.NewReader(fmt.Sprintf(`{"chat_id":%q}`, chatID))
+    req, err := http.NewRequest("POST", kimiDeleteChatURL, body)
+    if err != nil {
+        log.Println("Delete chat request error:", err)
+        return
+    }
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+accessToken)
+    req.Header.Set("X-Msh-Platform", "web")
+    req.Header.Set("Referer", "https://www.kimi.com/chat/"+chatID)
+
+    resp, err := httpClient.Do(req)
+    if err != nil {
+        log.Println("Delete chat error:", err)
+        return
+    }
+    defer resp.Body.Close()
+    if resp.StatusCode != http.StatusOK {
+        respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+        log.Printf("Delete chat %s failed: HTTP %d — %s", chatID, resp.StatusCode, string(respBody))
+        return
+    }
+    log.Printf("Deleted rotated-out chat %s", chatID)
+}
+
+// ensureBackupChat creates a standby chat session if none exists yet. Safe for
+// concurrent use; a losing creator discards its extra session.
+func ensureBackupChat() {
+    state.mu.Lock()
+    if state.backupChatID != "" {
+        state.mu.Unlock()
+        return
+    }
+    state.mu.Unlock()
+
+    chatID, parentID, err := startNewChat()
+    if err != nil {
+        log.Println("Failed to create backup chat:", err)
+        return
+    }
+    state.mu.Lock()
+    if state.backupChatID == "" {
+        state.backupChatID = chatID
+        state.backupParentID = parentID
+        log.Printf("Backup chat created: %s", chatID)
+    } else {
+        go deleteChat(chatID) // another creator won — discard the extra one
+    }
+    state.mu.Unlock()
+}
+
+// rotateChats promotes the standby session to active, deletes the previous
+// active session, and spawns a fresh standby so two sessions are always
+// maintained. Callers must re-resolve chat IDs afterwards.
+func rotateChats() error {
+    state.mu.Lock()
+    oldChatID := state.chatID
+    nextChatID := state.backupChatID
+    nextParentID := state.backupParentID
+    state.backupChatID = ""
+    state.backupParentID = ""
+    state.mu.Unlock()
+
+    // No standby available — create the replacement session synchronously.
+    if nextChatID == "" {
+        chatID, parentID, err := startNewChat()
+        if err != nil {
+            return err
+        }
+        nextChatID, nextParentID = chatID, parentID
+    }
+
+    state.mu.Lock()
+    state.chatID = nextChatID
+    state.lastMessageID = nextParentID
+    state.staticChatID = nextChatID
+    state.staticParentID = nextParentID
+    state.mu.Unlock()
+
+    // Delete the used-up session right after it is rotated out.
+    if oldChatID != "" && oldChatID != nextChatID {
+        go deleteChat(oldChatID)
+    }
+
+    // Maintain the two-session invariant for future failovers.
+    go ensureBackupChat()
+
+    return nil
+}
+
+// resolveChatIDs returns the chat/parent IDs to use for the next request,
+// based on the current history mode.
+func resolveChatIDs() (chatID, parentID string, useHistory bool) {
+    state.mu.RLock()
+    useHistory = state.useHistory
+    if useHistory {
+        chatID = state.chatID
+        parentID = state.lastMessageID
+    } else {
+        chatID = state.staticChatID
+        parentID = state.staticParentID
+    }
+    state.mu.RUnlock()
+    return
+}
+
+// cleanupStatelessSession rotates and deletes the session used by a just
+// finished history=false request. Stateless sessions are temporary by design:
+// every request runs on a session that is deleted immediately after use.
+func cleanupStatelessSession() {
+    state.mu.RLock()
+    useHistory := state.useHistory
+    state.mu.RUnlock()
+    if useHistory {
+        return
+    }
+    if err := rotateChats(); err != nil {
+        log.Println("Failed to rotate stateless session:", err)
+        return
+    }
+    log.Println("Stateless session used — rotated out and deleted")
 }
 
 // ============================================================================
@@ -1135,6 +1278,9 @@ func handleNewChat(w http.ResponseWriter, r *http.Request) {
     }
     state.mu.Unlock()
 
+    // Keep a standby session ready for context-limit failover.
+    go ensureBackupChat()
+
     sendJSON(w, map[string]interface{}{
         "message":       "New chat started",
         "chatId":        chatID,
@@ -1262,10 +1408,26 @@ func doKimiChat(currentChatID, parentID, prompt string, model modelInfo, thinkin
     return httpClient.Do(req)
 }
 
+// doChatRequest performs one upstream Kimi chat request and verifies the HTTP
+// status, returning a body ready for Connect-frame parsing. Caller must close.
+func doChatRequest(currentChatID, parentID, prompt string, model modelInfo, thinking, search bool) (*http.Response, error) {
+    resp, err := doKimiChat(currentChatID, parentID, prompt, model, thinking, search)
+    if err != nil {
+        return nil, err
+    }
+    if resp.StatusCode != http.StatusOK {
+        defer resp.Body.Close()
+        respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+        return nil, fmt.Errorf("Kimi API error: HTTP %d — %s", resp.StatusCode, string(respBody))
+    }
+    return resp, nil
+}
+
 // readKimiFrames iterates Connect-protocol frames from a Kimi response body
 // and invokes onDelta for each text content delta. It also updates the
-// lastMessageID for history mode.
-func readKimiFrames(body io.Reader, useHistory bool, onDelta func(string)) {
+// lastMessageID for history mode. Returns errContextTooLong when Kimi reports
+// that the conversation has hit its token-length limit.
+func readKimiFrames(body io.Reader, useHistory bool, onDelta func(string)) error {
     reader := bufio.NewReaderSize(body, 64*1024)
     for {
         flag, err := reader.ReadByte()
@@ -1300,6 +1462,14 @@ func readKimiFrames(body io.Reader, useHistory bool, onDelta func(string)) {
             continue
         }
 
+        // Context-limit detection: Kimi signals a full conversation with a
+        // block.exception frame carrying REASON_TOKEN_LENGTH_TOO_LONG.
+        if data.Block != nil && data.Block.Exception != nil &&
+            data.Block.Exception.Error != nil &&
+            data.Block.Exception.Error.Reason == "REASON_TOKEN_LENGTH_TOO_LONG" {
+            return errContextTooLong
+        }
+
         if useHistory && data.Message != nil && data.Message.ID != "" {
             state.mu.Lock()
             state.lastMessageID = data.Message.ID
@@ -1316,6 +1486,7 @@ func readKimiFrames(body io.Reader, useHistory bool, onDelta func(string)) {
             onDelta(content)
         }
     }
+    return nil
 }
 
 // handleChatCompletions implements /v1/chat/completions.
@@ -1382,71 +1553,14 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
         prompt = " "
     }
 
-    // Resolve chat / parent IDs based on history mode
-    state.mu.RLock()
-    useHistory := state.useHistory
-    var currentChatID, parentID string
-    if useHistory {
-        currentChatID = state.chatID
-        parentID = state.lastMessageID
-    } else {
-        currentChatID = state.staticChatID
-        parentID = state.staticParentID
-    }
-    state.mu.RUnlock()
-
     thinking := model.Thinking || body.DeepThink
     search := body.Search
 
-    resp, err := doKimiChat(currentChatID, parentID, prompt, model, thinking, search)
-    if err != nil {
-        sendError(w, err.Error(), "upstream_error", nil, 502)
-        return
-    }
-    defer resp.Body.Close()
-
-    log.Printf("Kimi API Status: %d  (model=%s  history=%v  agentMode=%v)",
-        resp.StatusCode, modelKey, useHistory, agentMode)
-
-    if resp.StatusCode != http.StatusOK {
-        respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-        sendError(w,
-            fmt.Sprintf("Kimi API error: HTTP %d — %s", resp.StatusCode, string(respBody)),
-            "upstream_error", nil, 502)
-        return
-    }
-
-    // ── Stream vs non-stream dispatch ──
-    // MODIFIED: honour body.Stream. Default is true (preserves prior behaviour
-    // for clients that omit the field).
-    stream := true
-    if body.Stream || (body.Stream == false && false) {
-        // keep default true
-    }
-    // body.Stream is a bool; if explicitly false, switch to non-stream.
-    // Since Go zero-value is false, we treat only explicit JSON `false` as
-    // non-stream. We re-parse to detect presence:
-    // (Simpler: stream defaults to true unless body explicitly contains
-    // "stream": false. We already decoded; Stream is false if absent or set
-    // false — to preserve old behaviour, default to true.)
-    // NOTE: To preserve prior behaviour (always stream) for clients that
-    // don't send the field, we treat absent-or-true as stream=true.
-    // Only an explicit false disables streaming.
-
-    // Detect explicit false by re-marshalling is wasteful; we rely on
-    // the OpenAI convention that stream defaults to false. However, the
-    // previous Kimi code ALWAYS streamed regardless. To avoid breaking
-    // existing clients, we keep that behaviour: stream unless explicitly
-    // false AND agent mode is off (agent mode clients usually want
-    // non-stream for tool calls).
-    if agentMode {
-        // In agent mode, respect the explicit Stream flag.
-        stream = body.Stream
-    }
-    _ = stream
-
+    // ── Non-stream dispatch (Agent Mode) ──
+    // The non-stream handler owns its own upstream request so it can
+    // transparently retry on the standby session after a context-limit.
     if agentMode && !body.Stream {
-        handleChatCompletionsNonStream(w, resp.Body, modelKey)
+        handleChatCompletionsNonStream(w, modelKey, prompt, model, thinking, search)
         return
     }
 
@@ -1510,7 +1624,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
     fullContent := ""
     sentContent := ""
 
-    readKimiFrames(resp.Body, useHistory, func(content string) {
+    onDelta := func(content string) {
         fullContent += content
 
         if interceptor != nil {
@@ -1544,7 +1658,53 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
             chunk.Choices[0].FinishReason = nil
             writeSSE(chunk)
         }
-    })
+    }
+
+    // ── Upstream request with context-limit failover ──
+    // When Kimi reports REASON_TOKEN_LENGTH_TOO_LONG the active conversation
+    // has hit its per-chat limit. Rotate to the standby session, spawn a
+    // fresh standby, delete the fulled-up chat, and transparently retry the
+    // same prompt — the SSE stream continues seamlessly.
+    for attempt := 1; ; attempt++ {
+        currentChatID, parentID, useHistory := resolveChatIDs()
+
+        resp, err := doChatRequest(currentChatID, parentID, prompt, model, thinking, search)
+        if err != nil {
+            if attempt > 1 {
+                log.Println("Upstream retry failed after rotation:", err)
+                break
+            }
+            sendError(w, err.Error(), "upstream_error", nil, 502)
+            return
+        }
+        log.Printf("Kimi API Status: %d  (model=%s  history=%v  agentMode=%v)",
+            resp.StatusCode, modelKey, useHistory, agentMode)
+
+        streamErr := readKimiFrames(resp.Body, useHistory, onDelta)
+        resp.Body.Close()
+
+        if streamErr == errContextTooLong && attempt < 2 {
+            log.Printf("Chat %s hit context limit — rotating to standby session", currentChatID)
+            // The retry starts a brand-new conversation — reset accumulation state.
+            fullContent = ""
+            sentContent = ""
+            if interceptor != nil {
+                interceptor = newAgentStreamInterceptor()
+            }
+            if err := rotateChats(); err != nil {
+                log.Println("Failed to rotate chat session:", err)
+                break
+            }
+            continue
+        }
+        if streamErr == errContextTooLong {
+            log.Printf("Chat %s hit context limit again after rotation — giving up", currentChatID)
+        }
+        if streamErr != nil && streamErr != errContextTooLong {
+            log.Println("Stream read error:", streamErr)
+        }
+        break
+    }
 
     // Flush interceptor trailing text
     if interceptor != nil {
@@ -1602,16 +1762,53 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
     if flusher != nil {
         flusher.Flush()
     }
+
+    // In history=false mode the session used by this request is temporary —
+    // rotate it out and delete it immediately after use.
+    cleanupStatelessSession()
 }
 
 // handleChatCompletionsNonStream buffers the Kimi response and returns a
 // single OpenAI chat.completion JSON object. Used by agent-mode clients
-// that send stream:false. (Mirrors GLM's non-stream path.)
-func handleChatCompletionsNonStream(w http.ResponseWriter, body io.Reader, modelKey string) {
+// that send stream:false. Retries once via the standby session when the
+// active conversation hits Kimi's context limit. (Mirrors GLM's non-stream
+// path.)
+func handleChatCompletionsNonStream(w http.ResponseWriter, modelKey, prompt string, model modelInfo, thinking, search bool) {
     fullContent := ""
-    readKimiFrames(body, state.useHistory, func(content string) {
-        fullContent += content
-    })
+
+    for attempt := 1; ; attempt++ {
+        currentChatID, parentID, useHistory := resolveChatIDs()
+
+        resp, err := doChatRequest(currentChatID, parentID, prompt, model, thinking, search)
+        if err != nil {
+            sendError(w, err.Error(), "upstream_error", nil, 502)
+            return
+        }
+        log.Printf("Kimi API Status: %d  (model=%s  history=%v  agentMode=%v)",
+            resp.StatusCode, modelKey, useHistory, agentMode)
+
+        fullContent = ""
+        streamErr := readKimiFrames(resp.Body, useHistory, func(content string) {
+            fullContent += content
+        })
+        resp.Body.Close()
+
+        if streamErr == errContextTooLong && attempt < 2 {
+            log.Printf("Chat %s hit context limit — rotating to standby session", currentChatID)
+            if err := rotateChats(); err != nil {
+                sendError(w, err.Error(), "upstream_error", nil, 502)
+                return
+            }
+            continue
+        }
+        if streamErr == errContextTooLong {
+            log.Printf("Chat %s hit context limit again after rotation — giving up", currentChatID)
+        }
+        if streamErr != nil && streamErr != errContextTooLong {
+            log.Println("Stream read error:", streamErr)
+        }
+        break
+    }
 
     requestId := generateID()
     timestamp := time.Now().Unix()
@@ -1620,6 +1817,9 @@ func handleChatCompletionsNonStream(w http.ResponseWriter, body io.Reader, model
         toolCalls := extractAgentToolCalls(fullContent)
         if len(toolCalls) > 0 {
             stripped := stripAgentToolCallBlocks(fullContent)
+            // In history=false mode the session used here is temporary — delete
+            // it immediately after use.
+            cleanupStatelessSession()
             sendJSON(w, map[string]interface{}{
                 "id":      "chatcmpl-" + requestId,
                 "object":  "chat.completion",
@@ -1645,6 +1845,10 @@ func handleChatCompletionsNonStream(w http.ResponseWriter, body io.Reader, model
             return
         }
     }
+
+    // In history=false mode the session used by this request is temporary —
+    // rotate it out and delete it immediately after use.
+    cleanupStatelessSession()
 
     sendJSON(w, map[string]interface{}{
         "id":      "chatcmpl-" + requestId,
@@ -1756,6 +1960,12 @@ func main() {
 
     log.Printf("Initialized with ChatID: %s", chatID)
     log.Printf("History mode default: %v", state.useHistory)
+
+    // Maintain a standby session for context-limit failover.
+    ensureBackupChat()
+    state.mu.RLock()
+    log.Printf("Backup ChatID: %s", state.backupChatID)
+    state.mu.RUnlock()
 
     // HTTP server tuned for streaming proxy workload
     server := &http.Server{

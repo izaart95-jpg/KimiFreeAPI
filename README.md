@@ -21,6 +21,7 @@ that bridges OpenAI-style tool calling onto Kimi's single-prompt upstream.
 - **🖼️ Multimodal Support** — Handles plain-string content and structured content arrays (`[{type:"text", text:"…"}]`)
 - **🧠 Extended Capabilities** — Per-request `deepThink` (reasoning) and `search` (web search) flags
 - **📚 Flexible History** — Toggle between stateful conversations (default) and stateless requests that branch from the initialization point
+- **🔄 Context-Limit Auto-Failover** — Two chat sessions are always maintained; when Kimi reports the per-chat token limit (`REASON_TOKEN_LENGTH_TOO_LONG`), the proxy transparently rotates to the standby session, deletes the fulled-up chat, and retries the request (see *Context Limit Auto-Failover* below)
 - **🔄 Dynamic Model Discovery** — Models fetched live from Kimi at startup; refreshable at runtime via `/refresh-models`
 - **🔒 Thread-Safe** — `sync.RWMutex` protected state for concurrent request handling
 - **💤 Graceful Shutdown** — Clean connection draining on `SIGINT`/`SIGTERM` (10 s timeout)
@@ -246,6 +247,25 @@ POST /new
 ```
 
 Initializes a fresh chat session with a new Chat ID and Parent Message ID. Both the dynamic (history-mode) and static (stateless) IDs are reset to the new values.
+
+### 5. Context Limit Auto-Failover
+
+Kimi enforces a per-chat token-length limit. Once reached, the upstream returns
+a `block.exception` frame with `reason: REASON_TOKEN_LENGTH_TOO_LONG`
+("Your conversation with Kimi is getting too long. Try starting a new
+session."). The proxy detects this mid-stream and transparently:
+
+1. **Rotates** the active session to a **standby session** — two sessions are
+   always maintained at runtime (the active one plus a ready spare, created at
+   startup and replenished after every rotation),
+2. **Deletes** the fulled-up session via Kimi's `DeleteChat` API, and
+3. **Retries** the same request on the rotated session — the SSE stream (or the
+   buffered non-stream response) continues seamlessly.
+
+This applies to both history modes. In stateless mode (`history: false`) every
+session is temporary by design: the session used by a request is rotated out
+and deleted immediately after the request completes, so nothing accumulates
+server-side.
 
 ## 🤖 Agent Mode
 
